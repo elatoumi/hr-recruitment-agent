@@ -20,6 +20,7 @@ The agent's "brain" (built with LangGraph) will have access to a set of speciali
 * **Job Offer Generator (`job_offer_generator_tool`):** A separate RAG pipeline (with ChromaDB) that uses a knowledge base of company templates to generate a complete, personalized job offer.
 
 ## 🏗️ Architecture Overview
+<img width="1272" height="528" alt="image" src="https://github.com/user-attachments/assets/0333a9fe-e7c8-4f0a-8b6c-97b3fa7f7735" />
 
 This project is built on a modern, agentic architecture.
 
