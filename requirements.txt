@@ -1,6 +1,7 @@
 streamlit
 langgraph
 langchain
+langchain-core
 langchain-groq
 sentence-transformers
 pypdf2
@@ -8,3 +9,4 @@ python-docx
 chromadb
 faiss-cpu
 python-dotenv
+pydantic>=2.0
