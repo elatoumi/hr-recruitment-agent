@@ -14,6 +14,7 @@ Tools:
 
 from typing import Optional
 from langchain_core.tools import tool
+from .match_explainer import MatchExplainer, analyze_candidate_match
 
 
 @tool
@@ -80,8 +81,30 @@ def match_explainer(
         - gap_summary: Human-readable gap analysis string
         - recommendation: Hire/Consider/Pass recommendation
     """
-    # TODO: Identify matched vs missing skills, generate gap analysis, provide recommendation
-    raise NotImplementedError("Implement match_explainer")
+    explainer = MatchExplainer()
+    
+  
+    cv_text = ", ".join(candidate_skills.get("skills", []))
+    job_text = ", ".join(job_requirements.get("required", []) + job_requirements.get("preferred", []))
+    
+    result = explainer.analyze(cv_text, job_text, detailed=True)
+    
+    
+    if result["match_score"] >= 80:
+        recommendation = "Hire"
+    elif result["match_score"] >= 60:
+        recommendation = "Consider"
+    else:
+        recommendation = "Pass"
+    
+    return {
+        "score_display": f"{result['match_score']}%",
+        "matched_skills": result["matches"],
+        "missing_skills": result["gaps"],
+        "gap_summary": result["explanation"],
+        "recommendation": recommendation,
+        "status": "success"
+    }
 
 
 @tool
