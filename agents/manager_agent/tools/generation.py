@@ -37,8 +37,10 @@ def job_offer_generator(
     raise NotImplementedError("Implement job_offer_generator")
 
 
+import re
+
 @tool
-def offer_validator_tool(generated_text: str) -> dict:
+def offer_validator_tool(generated_text):
     """
     Sanity check for generated offer text.
     
@@ -55,8 +57,39 @@ def offer_validator_tool(generated_text: str) -> dict:
         - warnings: List of potential issues
         - suggestions: Recommended fixes
     """
-    # TODO: Detect placeholder patterns, flag unfilled ones, check critical fields
-    raise NotImplementedError("Implement offer_validator_tool")
+
+    # Safety check for empty or too short text
+    if not generated_text or len(generated_text.strip()) < 50:
+        return {
+            "valid": False,
+            "unfilled_placeholders": [],
+            "warnings": ["Offer text is empty or too short"],
+            "suggestions": ["Provide a complete job offer text"]
+        }
+
+    # Detect placeholders like [INSERT SALARY], [CANDIDATE NAME], etc.
+    placeholders = re.findall(r"\[.*?\]", generated_text)
+
+    # Check for presence of critical fields
+    critical_fields = ["salary", "job title", "location", "contract"]
+    warnings = []
+    text_lower = generated_text.lower()
+    for field in critical_fields:
+        if field not in text_lower:
+            warnings.append(f"Missing critical field: {field}")
+
+    # Build suggestions for placeholders
+    suggestions = [f"Replace placeholder {ph}" for ph in placeholders]
+
+    # Determine overall validity
+    is_valid = len(placeholders) == 0 and len(warnings) == 0
+
+    return {
+        "valid": is_valid,
+        "unfilled_placeholders": placeholders,
+        "warnings": warnings,
+        "suggestions": suggestions
+    }
 
 
 @tool
@@ -90,18 +123,40 @@ def market_salary_check(
     raise NotImplementedError("Implement market_salary_check")
 
 
-def validate_offer(content: str) -> dict:
-    """
-    Core offer validation function (non-tool version).
-    
-    Args:
-        content: Offer content to validate.
-    
-    Returns:
-        Validation result dictionary.
-    """
-    # TODO: Implement core validation logic
-    raise NotImplementedError("Implement validate_offer")
+
+def validate_offer(content):
+    # Check si le texte est vide ou trop court
+    if not content or len(content.strip()) < 50:
+        return {
+            "valid": False,
+            "unfilled_placeholders": [],
+            "warnings": ["Offer text is empty or too short"],
+            "suggestions": ["Provide a complete job offer text"]
+        }
+
+    # Trouver les placeholders
+    placeholders = re.findall(r"\[.*?\]", content)
+
+    # Vérifier les champs critiques
+    critical_fields = ["salary", "job title", "location", "contract"]
+    warnings = []
+    text_lower = content.lower()
+    for field in critical_fields:
+        if field not in text_lower:
+            warnings.append(f"Missing critical field: {field}")
+
+    # Suggestions pour les placeholders
+    suggestions = [f"Replace placeholder {ph}" for ph in placeholders]
+
+    # Validation globale
+    is_valid = len(placeholders) == 0 and len(warnings) == 0
+
+    return {
+        "valid": is_valid,
+        "unfilled_placeholders": placeholders,
+        "warnings": warnings,
+        "suggestions": suggestions
+    }
 
 
 def get_salary_range(role: str, location: Optional[str] = None) -> dict:
