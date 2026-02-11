@@ -30,9 +30,48 @@ def extract_skills(text: str) -> dict:
 @tool
 def candidate_summarizer(cv_text: str, extracted_skills: Optional[dict] = None) -> str:
     """
-    Generate a concise executive summary of the candidate's profile.
+    Generate a 3-sentence executive summary of a candidate.
     """
-    return "Candidate summary unavailable."
+
+    # Safety check: empty or unusable CV
+    if not cv_text or len(cv_text.strip()) < 30:
+        return "Insufficient information available to generate a candidate summary."
+
+    # Defaults
+    skills = []
+    experience_years = None
+    education = []
+
+    # Use extracted skills if provided
+    if extracted_skills:
+        skills = extracted_skills.get("skills", [])
+        experience_years = extracted_skills.get("experience_years")
+        education = extracted_skills.get("education", [])
+
+    # Build summary components
+    skills_str = ", ".join(skills[:5]) if skills else "relevant technical skills"
+
+    experience_str = (
+        f"{experience_years} years of professional experience"
+        if isinstance(experience_years, int)
+        else "a professional background in the field"
+    )
+
+    education_str = ""
+    if education and isinstance(education, list):
+        degree = education[0].get("degree", "")
+        field = education[0].get("field", "")
+        if degree or field:
+            education_str = f" Holds a {degree} in {field}."
+
+    # Final 3-sentence summary
+    summary = (
+        f"Candidate with {experience_str}. "
+        f"Key strengths include {skills_str}. "
+        f"{education_str or 'Profile suitable for further technical assessment.'}"
+    )
+
+    return summary.strip()
 
 
 def _parse_year(value: str) -> Optional[int]:
