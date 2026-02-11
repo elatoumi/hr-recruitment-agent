@@ -6,6 +6,10 @@ from langchain_core.tools import tool
 
 @tool
 def skill_extractor_tool(cv_text: str) -> dict:
+    """
+    Extract structured skills, experience, and education from CV text.
+    Returns a JSON compatible dictionary.
+    """
     return {
         "skills": [],
         "experience_years": 0,
@@ -25,6 +29,9 @@ def extract_skills(text: str) -> dict:
 
 @tool
 def candidate_summarizer(cv_text: str, extracted_skills: Optional[dict] = None) -> str:
+    """
+    Generate a concise executive summary of the candidate's profile.
+    """
     return "Candidate summary unavailable."
 
 

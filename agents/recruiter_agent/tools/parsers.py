@@ -7,6 +7,10 @@ import unicodedata
 
 @tool
 def cv_parser_tool(file_path: str) -> dict:
+    """
+    Parse a CV/Resume file (PDF, DOCX, TXT) and extract its text content.
+    Returns a dictionary with 'content' and 'metadata'.
+    """
     try:
         path = Path(file_path)
         if not path.exists():
@@ -41,6 +45,10 @@ def cv_parser_tool(file_path: str) -> dict:
 
 @tool
 def text_cleaner_pipeline(text: str) -> str:
+    """
+    Clean and normalize extracted text.
+    Removes emojis, normalizes unicode, and collapses whitespace.
+    """
     if not text:
         return ""
 
@@ -68,6 +76,11 @@ def text_cleaner_pipeline(text: str) -> str:
 
 @tool
 def anonymizer_tool(text: str) -> dict:
+    """
+    Anonymize CV text to reduce hiring bias.
+
+    Uses Regex to strip names, emails, and phone numbers.
+    """
     if not text:
         return {
             "anonymized_text": "",
@@ -103,6 +116,10 @@ def anonymizer_tool(text: str) -> dict:
 
 @tool
 def batch_upload_handler(files: List[str]) -> List[Dict]:
+    """
+    Process multiple CV files in batch.
+    Parses and cleans each file, returning a list of results.
+    """
     results = []
 
     for file_path in files:
