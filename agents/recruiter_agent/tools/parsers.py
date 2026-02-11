@@ -77,15 +77,22 @@ def anonymizer_tool(text: str) -> dict:
 
     removed = []
 
-    email_pattern = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-    if re.search(email_pattern, text):
-        removed.append("email")
-        text = re.sub(email_pattern, "[EMAIL]", text)
+    # Patterns combined from PRs
+    email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+    phone_pattern = re.compile(r"(\+?\d{1,3}[\s\-]?)?(\(?\d{2,4}\)?[\s\-]?)?\d{3,4}[\s\-]?\d{3,4}")
+    name_pattern = re.compile(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})\b")
 
-    phone_pattern = r"\+?\d[\d\s().-]{7,}\d"
-    if re.search(phone_pattern, text):
+    if email_pattern.search(text):
+        removed.append("email")
+        text = email_pattern.sub("[REDACTED_EMAIL]", text)
+
+    if phone_pattern.search(text):
         removed.append("phone")
-        text = re.sub(phone_pattern, "[PHONE]", text)
+        text = phone_pattern.sub("[REDACTED_PHONE]", text)
+
+    if name_pattern.search(text):
+        removed.append("name")
+        text = name_pattern.sub("[REDACTED_NAME]", text)
 
     return {
         "anonymized_text": text,
