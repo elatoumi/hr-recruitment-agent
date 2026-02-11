@@ -12,9 +12,43 @@ Tools:
 - cv_ranker: Rank multiple candidates against a job description
 """
 
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
 from .match_explainer import MatchExplainer, analyze_candidate_match
+
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    _model = SentenceTransformer("all-MiniLM-L6-v2")
+except ImportError:
+    _model = None
+    print("Warning: sentence-transformers, sklearn or numpy not installed.")
+except Exception as e:
+    _model = None
+    print(f"Warning: Could not load SentenceTransformer: {e}")
+
+
+def _candidate_json_to_text(candidate_profile: dict) -> str:
+    """
+    Convert structured candidate JSON into a single text string
+    suitable for semantic embedding.
+    """
+    sections = []
+
+    skills = candidate_profile.get("skills")
+    if isinstance(skills, list) and skills:
+        sections.append("Skills: " + ", ".join(skills))
+
+    experience = candidate_profile.get("experience")
+    if isinstance(experience, list) and experience:
+        sections.append("Experience: " + ". ".join(experience))
+
+    education = candidate_profile.get("education")
+    if isinstance(education, str) and education.strip():
+        sections.append("Education: " + education)
+
+    return ". ".join(sections)
 
 
 @tool
@@ -33,34 +67,37 @@ def similarity_matcher_tool(
     
     Returns:
         A dictionary containing:
-        - similarity_score: Float 0-1 cosine similarity
+        - similarity_score: Float 0-100 cosine similarity
         - confidence: Confidence level of the match
-        - matched_embeddings: Debug info (optional)
     """
-    # TODO: Use sentence-transformers, compute cosine similarity, return normalized score
-    raise NotImplementedError("Implement similarity_matcher_tool")
+    if _model is None:
+        return {"error": "Model not loaded", "similarity_score": 0.0}
 
+    if not candidate_skills or not job_description:
+        return {"similarity_score": 0.0}
 
-def compute_similarity(text_a: str, text_b: str) -> float:
-    """
-    Core similarity computation function.
-    
-    Args:
-        text_a: First text to compare.
-        text_b: Second text to compare.
-    
-    Returns:
-        Cosine similarity score (0-1).
-    """
-    # TODO: Implement using sentence-transformers
-    raise NotImplementedError("Implement compute_similarity")
+    candidate_text = _candidate_json_to_text(candidate_skills)
+
+    embeddings = _model.encode(
+        [candidate_text, job_description],
+        normalize_embeddings=True
+    )
+
+    candidate_embedding = embeddings[0].reshape(1, -1)
+    job_embedding = embeddings[1].reshape(1, -1)
+
+    similarity = cosine_similarity(candidate_embedding, job_embedding)[0][0]
+
+    return {
+        "similarity_score": round(float(similarity) * 100, 2)
+    }
 
 
 @tool
 def match_explainer(
     candidate_skills: dict,
     job_requirements: dict,
-    similarity_score: float
+    similarity_score: float = 0.0
 ) -> dict:
     """
     Explain the match with gap analysis.
@@ -81,68 +118,42 @@ def match_explainer(
         - gap_summary: Human-readable gap analysis string
         - recommendation: Hire/Consider/Pass recommendation
     """
+    # Assuming MatchExplainer handles dict inputs now or we need to adapt
+    # The MatchExplainer in match_explainer.py seems to take lists
+    
+    # Extract lists from dicts
+    c_skills = candidate_skills.get("skills", [])
+    j_reqs = job_requirements.get("required", []) + job_requirements.get("preferred", [])
+    
     explainer = MatchExplainer()
+    result = explainer.explain(c_skills, j_reqs)
     
-  
-    cv_text = ", ".join(candidate_skills.get("skills", []))
-    job_text = ", ".join(job_requirements.get("required", []) + job_requirements.get("preferred", []))
+    match_score = result.get("match_score", 0)
     
-    result = explainer.analyze(cv_text, job_text, detailed=True)
-    
-    
-    if result["match_score"] >= 80:
+    if match_score >= 80:
         recommendation = "Hire"
-    elif result["match_score"] >= 60:
+    elif match_score >= 60:
         recommendation = "Consider"
     else:
         recommendation = "Pass"
     
     return {
-        "score_display": f"{result['match_score']}%",
-        "matched_skills": result["matches"],
-        "missing_skills": result["gaps"],
-        "gap_summary": result["explanation"],
-        "recommendation": recommendation,
-        "status": "success"
+        "score_display": f"{match_score}%",
+        "matched_skills": result.get("matches", []),
+        "missing_skills": result.get("gaps", []),
+        "gap_summary": result.get("explanation", ""),
+        "recommendation": recommendation
     }
 
-
 @tool
-def cv_ranker(
-    candidates: list[dict],
-    job_description: str,
-    top_n: int = 10
-) -> list[dict]:
+def cv_ranker(candidates: List[Dict], job_description: str) -> List[Dict]:
     """
-    Rank multiple candidates against a job description.
-    
-    Args:
-        candidates: List of candidate dicts with extracted skills.
-        job_description: The job description to match against.
-        top_n: Number of top candidates to return.
-    
-    Returns:
-        Ranked list of candidates with scores and gap analysis.
+    Rank a list of candidates based on similarity to job description.
     """
-    # TODO: Use similarity_matcher_tool and match_explainer, sort by score
-    raise NotImplementedError("Implement cv_ranker")
-
-
-def rank_candidates(
-    candidates: list[dict],
-    job_requirements: dict,
-    top_n: int = 10
-) -> list[dict]:
-    """
-    Core ranking function (non-tool version).
+    ranked = []
+    for cand in candidates:
+        score = similarity_matcher_tool(cand, job_description).get("similarity_score", 0)
+        cand["score"] = score
+        ranked.append(cand)
     
-    Args:
-        candidates: List of candidate data.
-        job_requirements: Parsed job requirements.
-        top_n: Max candidates to return.
-    
-    Returns:
-        Ranked candidate list.
-    """
-    # TODO: Implement core ranking logic
-    raise NotImplementedError("Implement rank_candidates")
+    return sorted(ranked, key=lambda x: x["score"], reverse=True)
