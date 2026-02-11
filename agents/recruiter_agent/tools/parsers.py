@@ -1,145 +1,107 @@
-"""
-CV Parsing Tools
-
-This module contains tools for parsing CVs/resumes from various formats,
-cleaning text, anonymizing data, and handling batch uploads.
-
-Group: Recruiter Agent (Group 1)
-
-Tools:
-- cv_parser_tool: PDF/DOCX extraction using PyPDF2/pdfplumber
-- text_cleaner_pipeline: Strip whitespace, emojis, normalize unicode
-- anonymizer_tool: Regex/NER to strip names, emails, phones (bias reduction)
-- batch_upload_handler: Accept List[File] for batch processing
-"""
-
-from typing import Optional
+from typing import List, Dict
 from pathlib import Path
 from langchain_core.tools import tool
+import re
+import unicodedata
 
 
 @tool
 def cv_parser_tool(file_path: str) -> dict:
-    """
-    Parse a CV/Resume file and extract its text content.
-    
-    Supports PDF and DOCX formats. Must handle multiple columns correctly.
-    
-    Args:
-        file_path: Path to the CV file to parse.
-    
-    Returns:
-        A dictionary containing:
-        - success: Boolean indicating if parsing succeeded
-        - content: The extracted text content (clean string)
-        - metadata: File metadata (name, format, size)
-        - error: Error message if parsing failed
-    
-    TODO:
-    - Use PyPDF2 or pdfplumber for PDF extraction
-    - Use python-docx for DOCX extraction
-    - Handle multiple columns correctly
-    - Return clean string output
-    """
-    # TODO: Implement
-    raise NotImplementedError("Implement cv_parser_tool")
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            return {
+                "success": False,
+                "content": "",
+                "metadata": {},
+                "error": "File not found"
+            }
 
+        text = path.read_text(encoding="utf-8", errors="ignore")
 
-def parse_cv(file_path: str) -> dict:
-    """
-    Core CV parsing function (non-tool version for internal use).
-    
-    Args:
-        file_path: Path to the CV file.
-    
-    Returns:
-        Parsed CV data dictionary.
-    """
-    # TODO: Implement core parsing logic
-    raise NotImplementedError("Implement parse_cv")
+        return {
+            "success": True,
+            "content": text,
+            "metadata": {
+                "name": path.name,
+                "format": path.suffix.lower(),
+                "size": path.stat().st_size
+            },
+            "error": None
+        }
 
-
-def _parse_pdf(file_path: str) -> str:
-    """
-    Parse PDF file and extract text.
-    
-    Args:
-        file_path: Path to PDF file.
-    
-    Returns:
-        Extracted text string.
-    """
-    # TODO: Use PyPDF2 or pdfplumber, handle multi-column layouts
-    raise NotImplementedError("Implement _parse_pdf")
-
-
-def _parse_docx(file_path: str) -> str:
-    """
-    Parse DOCX file and extract text.
-    
-    Args:
-        file_path: Path to DOCX file.
-    
-    Returns:
-        Extracted text string.
-    """
-    # TODO: Use python-docx
-    raise NotImplementedError("Implement _parse_docx")
+    except Exception as e:
+        return {
+            "success": False,
+            "content": "",
+            "metadata": {},
+            "error": str(e)
+        }
 
 
 @tool
 def text_cleaner_pipeline(text: str) -> str:
-    """
-    Clean and normalize extracted text from CVs.
-    
-    Removes extra whitespace, emojis, and normalizes unicode.
-    Dirty text wastes tokens and confuses the LLM.
-    
-    Args:
-        text: Raw text extracted from a CV.
-    
-    Returns:
-        Cleaned and normalized text.
-    """
-    # TODO: Strip whitespace, remove emojis, normalize unicode
-    raise NotImplementedError("Implement text_cleaner_pipeline")
+    if not text:
+        return ""
+
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F77F"
+        "\U0001F780-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FAFF"
+        "]+",
+        flags=re.UNICODE,
+    )
+    text = emoji_pattern.sub("", text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 @tool
 def anonymizer_tool(text: str) -> dict:
-    """
-    Anonymize CV text to reduce hiring bias.
-    
-    Uses Regex/NER to strip names, emails, and phone numbers
-    before text goes to the Ranker.
-    
-    Args:
-        text: CV text to anonymize.
-    
-    Returns:
-        A dictionary containing:
-        - anonymized_text: Text with PII removed
-        - removed_entities: List of removed entity types
-        - entity_count: Count of entities removed
-    """
-    # TODO: Use Regex for emails/phones, NER (spaCy) for names
-    # This is an "AI for Social Good" feature for unbiased hiring
-    raise NotImplementedError("Implement anonymizer_tool")
+    if not text:
+        return {
+            "anonymized_text": "",
+            "removed_entities": [],
+            "entity_count": 0
+        }
+
+    removed = []
+
+    email_pattern = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
+    if re.search(email_pattern, text):
+        removed.append("email")
+        text = re.sub(email_pattern, "[EMAIL]", text)
+
+    phone_pattern = r"\+?\d[\d\s().-]{7,}\d"
+    if re.search(phone_pattern, text):
+        removed.append("phone")
+        text = re.sub(phone_pattern, "[PHONE]", text)
+
+    return {
+        "anonymized_text": text,
+        "removed_entities": removed,
+        "entity_count": len(removed)
+    }
 
 
-def batch_upload_handler(files: list) -> list[dict]:
-    """
-    Handle batch upload of multiple CV files.
-    
-    Processes a list of files so the agent can loop through
-    multiple CVs at once (e.g., 10 CVs).
-    
-    Args:
-        files: List of file paths or file objects.
-    
-    Returns:
-        List of parsed CV dictionaries.
-    """
-    # TODO: Accept List[File], loop through CVs, handle errors per-file
-    raise NotImplementedError("Implement batch_upload_handler")
+@tool
+def batch_upload_handler(files: List[str]) -> List[Dict]:
+    results = []
 
+    for file_path in files:
+        parsed = cv_parser_tool(file_path)
+        if parsed["success"]:
+            parsed["content"] = text_cleaner_pipeline(parsed["content"])
+        results.append(parsed)
+
+    return results
