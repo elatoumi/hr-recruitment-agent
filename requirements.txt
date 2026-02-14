@@ -4,6 +4,8 @@ langchain
 langchain-core
 langchain-groq
 sentence-transformers
+scikit-learn
+numpy
 pypdf2
 python-docx
 chromadb

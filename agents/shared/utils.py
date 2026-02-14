@@ -9,10 +9,45 @@ This module contains generic utilities used across the system:
 
 import logging
 import os
+import streamlit as st
 from functools import lru_cache
 from typing import Optional
 from pathlib import Path
 
+from langchain_groq import ChatGroq
+
+
+# ============================================================
+# LLM CONFIGURATION
+# ============================================================
+
+def _ensure_groq_api_key():
+    """Ensure GROQ_API_KEY is available in environment."""
+    if "GROQ_API_KEY" not in os.environ:
+        try:
+            # Try to get from streamlit secrets
+            if hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets:
+                os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+            else:
+                logger.warning("GROQ_API_KEY not found in environment or secrets.")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error loading secrets: {e}")
+
+@lru_cache(maxsize=1)
+def get_llm():
+    """
+    Returns the configured Groq LLM instance.
+    Uses 'openai/gpt-oss-120b' as requested.
+    """
+    _ensure_groq_api_key()
+    
+    return ChatGroq(
+        model="openai/gpt-oss-120b",
+        temperature=1,
+        max_retries=2
+    )
 
 # ============================================================
 # LOGGING CONFIGURATION

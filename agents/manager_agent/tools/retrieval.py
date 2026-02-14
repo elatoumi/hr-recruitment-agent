@@ -16,6 +16,60 @@ from typing import Optional
 from langchain_core.tools import tool
 
 
+try:
+    import chromadb
+    from chromadb.utils import embedding_functions
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
+
+
+# Mock templates for fallback
+MOCK_TEMPLATES = {
+    "software": """
+    JOB OFFER: Software Engineer
+    Title: {{position}}
+    Salary: ${{salary}}
+    Benefits: Health, Dental, 401k
+    Description: We are looking for a skilled developer...
+    """,
+    "sales": """
+    JOB OFFER: Sales Representative
+    Title: {{position}}
+    Salary: ${{salary}} + Commission
+    Benefits: Health, Travel allowance
+    Description: Join our dynamic sales team...
+    """,
+    "management": """
+    JOB OFFER: Manager
+    Title: {{position}}
+    Salary: ${{salary}}
+    Benefits: Full package + Stock options
+    Description: Lead our team to success...
+    """
+}
+
+def get_chroma_client():
+    if not CHROMA_AVAILABLE:
+        return None
+    return chromadb.Client() # In-memory for demo
+
+def initialize_chromadb_collection():
+    client = get_chroma_client()
+    if not client:
+        return None
+    
+    collection = client.get_or_create_collection(name="hr_templates")
+    
+    # Ingest mock templates if empty
+    if collection.count() == 0:
+        ids = list(MOCK_TEMPLATES.keys())
+        documents = list(MOCK_TEMPLATES.values())
+        metadatas = [{"role": k} for k in ids]
+        collection.add(documents=documents, metadatas=metadatas, ids=ids)
+        
+    return collection
+
 @tool
 def template_retriever_tool(
     role_type: str,
@@ -41,9 +95,79 @@ def template_retriever_tool(
         - alternatives: Other relevant templates (optional)
         - error: Error message if retrieval failed
     """
-    # TODO: Connect to ChromaDB, use embeddings for semantic search, return best match
-    raise NotImplementedError("Implement template_retriever_tool")
+    try:
+        # Fallback if no Chroma
+        if not CHROMA_AVAILABLE:
+            key = "software" if "engineer" in role_type.lower() or "developer" in role_type.lower() \
+                else "sales" if "sales" in role_type.lower() \
+                else "management" if "manager" in role_type.lower() else "software"
+            
+            return {
+                "success": True,
+                "template": MOCK_TEMPLATES.get(key, MOCK_TEMPLATES["software"]),
+                "template_name": key,
+                "similarity_score": 1.0,
+                "alternatives": []
+            }
 
+        collection = initialize_chromadb_collection()
+        if not collection:
+            raise Exception("ChromaDB initialization failed")
+            
+        # Query
+        query_text = f"{role_type} {context or ''}"
+        results = collection.query(query_texts=[query_text], n_results=1)
+        
+        if not results['documents'][0]:
+            return {"success": False, "error": "No templates found"}
+            
+        return {
+            "success": True,
+            "template": results['documents'][0][0],
+            "template_name": results['ids'][0][0],
+            "similarity_score": 0.9, # Placeholder
+            "alternatives": []
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "template": MOCK_TEMPLATES["software"] # Hard fallback
+        }
+
+
+@tool
+def ingest_templates_to_chromadb(templates: list) -> dict:
+    """
+    Ingest a list of HR templates into ChromaDB.
+    
+    Args:
+        templates: List of dicts with 'id', 'text', 'metadata'.
+        
+    Returns:
+        Status dictionary.
+    """
+    if not CHROMA_AVAILABLE:
+        return {"success": False, "error": "ChromaDB not available"}
+        
+    try:
+        collection = initialize_chromadb_collection()
+        if not collection:
+            return {"success": False, "error": "Failed to init collection"}
+            
+        ids = [t.get('id', str(i)) for i, t in enumerate(templates)]
+        documents = [t.get('text', '') for t in templates]
+        metadatas = [t.get('metadata', {}) for t in templates]
+        
+        collection.add(
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        return {"success": True, "count": len(ids)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def get_template(role_type: str, context: Optional[str] = None) -> dict:
     """

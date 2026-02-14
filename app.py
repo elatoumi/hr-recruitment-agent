@@ -6,9 +6,13 @@ Features a hierarchical supervisor pattern routing between specialized agents.
 """
 
 import streamlit as st
+import os
+from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage
 
 from agents.supervisor import supervisor_graph
+from agents.recruiter_agent.graph import recruiter_graph
+from agents.manager_agent.graph import manager_graph
 
 
 # Page configuration
@@ -51,12 +55,23 @@ def initialize_session_state():
     
     if "job_context" not in st.session_state:
         st.session_state.job_context = {}
+        
+    if "uploaded_cvs" not in st.session_state:
+        st.session_state.uploaded_cvs = []
 
 
 def render_sidebar():
     """Render the sidebar with agent information and controls."""
     with st.sidebar:
         st.header("🤖 Agent System")
+        
+        # Add mode selection
+        st.radio(
+            "Select Operation Mode",
+            ["Supervisor (Full System)", "Recruiter Agent (Single)", "Manager Agent (Single)"],
+            key="mode"
+        )
+        st.markdown("---")
         
         st.markdown("### Available Agents")
         
@@ -84,6 +99,42 @@ def render_sidebar():
             *Trigger words: offer, template, email, draft, write*
             """)
         
+        st.markdown("---")
+        
+        # File Uploader Section
+        st.markdown("### 📂 CV Upload")
+        uploaded_files = st.file_uploader(
+            "Upload Candidate CVs", 
+            type=['pdf', 'docx', 'txt', 'jpg', 'png'],
+            accept_multiple_files=True
+        )
+        
+        if uploaded_files:
+            upload_dir = Path("data/uploads")
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            
+            saved_paths = []
+            for uploaded_file in uploaded_files:
+                file_path = upload_dir / uploaded_file.name
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                saved_paths.append(str(file_path))
+            
+            st.success(f"Uploaded {len(saved_paths)} files.")
+            
+            # Add to session state so agents can 'see' them if needed
+            if "uploaded_cvs" not in st.session_state:
+                st.session_state.uploaded_cvs = []
+            
+            # Avoid duplicates in list
+            for p in saved_paths:
+                if p not in st.session_state.uploaded_cvs:
+                    st.session_state.uploaded_cvs.append(p)
+            
+            with st.expander("Stored Files"):
+                for p in st.session_state.uploaded_cvs:
+                    st.code(p, language='text')
+
         st.markdown("---")
         
         # Job Context Display
@@ -148,8 +199,17 @@ def render_chat_interface():
                         "job_context": st.session_state.job_context
                     }
                     
+                    # Select graph based on mode
+                    mode = st.session_state.get("mode", "Supervisor (Full System)")
+                    if mode == "Recruiter Agent (Single)":
+                        active_graph = recruiter_graph
+                    elif mode == "Manager Agent (Single)":
+                        active_graph = manager_graph
+                    else:
+                        active_graph = supervisor_graph
+
                     # Stream/invoke the graph
-                    result = supervisor_graph.invoke(input_state)
+                    result = active_graph.invoke(input_state)
                     
                     # Extract and display responses
                     response_messages = result.get("messages", [])

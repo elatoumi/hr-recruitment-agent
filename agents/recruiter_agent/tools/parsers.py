@@ -1,37 +1,244 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pathlib import Path
 from langchain_core.tools import tool
 import re
 import unicodedata
+import os
+
+# Lazy imports for optional dependencies
+try:
+    from transformers import AutoModel, AutoTokenizer
+    import torch
+    from PIL import Image
+    DEEPSEEK_AVAILABLE = True
+except ImportError:
+    DEEPSEEK_AVAILABLE = False
+
+try:
+    from pdf2image import convert_from_path
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+
+try:
+    from langchain_community.vectorstores import FAISS
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_core.documents import Document
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    # Define dummy Document class for type hinting if import fails
+    class Document:
+        pass
+
+
+class RAGHandler:
+    """Singleton handler for RAG operations."""
+    _vectorstore = None
+    _embeddings = None
+    
+    @classmethod
+    def get_embeddings(cls):
+        if cls._embeddings is None:
+            # Use a lightweight embedding model
+            cls._embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        return cls._embeddings
+    
+    @classmethod
+    def get_vectorstore(cls):
+        if cls._vectorstore is None and RAG_AVAILABLE:
+            cls._vectorstore = FAISS.from_documents(
+                [Document(page_content="Initial placeholder", metadata={"source": "system"})],
+                cls.get_embeddings()
+            )
+        return cls._vectorstore
+    
+    @classmethod
+    def add_document(cls, text: str, metadata: dict):
+        if not RAG_AVAILABLE:
+            return
+            
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.create_documents([text], metadatas=[metadata])
+        
+        vs = cls.get_vectorstore()
+        vs.add_documents(chunks)
+        print(f"Added {len(chunks)} chunks to RAG for {metadata.get('name')}")
+
+    @classmethod
+    def search(cls, query: str, k: int = 4) -> List[Document]:
+        if not RAG_AVAILABLE:
+            return []
+        vs = cls.get_vectorstore()
+        return vs.similarity_search(query, k=k)
+
+
+class DeepSeekOCRHandler:
+    """Handler for DeepSeek-OCR model inference."""
+    
+    _model = None
+    _tokenizer = None
+    
+    @classmethod
+    def load_model(cls, model_name: str = 'deepseek-ai/DeepSeek-OCR'):
+        if not DEEPSEEK_AVAILABLE:
+            raise ImportError("Required libraries (transformers, torch, PIL) not installed.")
+            
+        if cls._model is None:
+            print(f"Loading {model_name}...")
+            # Use GPU if available, else CPU (inference will be slow on CPU)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            
+            cls._tokenizer = AutoTokenizer.from_pretrained(
+                model_name, 
+                trust_remote_code=True
+            )
+            
+            cls._model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                use_safetensors=True
+            ).eval().to(device).to(dtype)
+            
+            print("DeepSeek-OCR Loaded.")
+            
+    @classmethod
+    def process_image(cls, image_path: str) -> str:
+        """Process a single image path and return text."""
+        cls.load_model()
+        
+        prompt = "<image>\n<|grounding|>Convert the document to markdown. "
+        
+        # Determine strict arguments based on availability
+        # The prompt suggests model.infer(...) method usage
+        try:
+            res = cls._model.infer(
+                cls._tokenizer,
+                prompt=prompt,
+                image_file=image_path,
+                base_size=1024,
+                image_size=640,
+                crop_mode=True,
+                save_results=False, # We just want text
+                test_compress=True
+            )
+            return res
+        except Exception as e:
+            return f"OCR Error: {str(e)}"
+
+    @classmethod
+    def process_pdf(cls, pdf_path: str) -> str:
+        """Convert PDF to images and process each."""
+        if not PDF2IMAGE_AVAILABLE:
+            return "Error: pdf2image library not found. Cannot convert PDF to images for OCR."
+            
+        try:
+            # Convert PDF pages to images
+            images = convert_from_path(pdf_path)
+            full_text = []
+            
+            for i, img in enumerate(images):
+                # Save temp image for the model file-based API
+                temp_img_path = f"{pdf_path}_page_{i}.jpg"
+                img.save(temp_img_path, "JPEG")
+                
+                # Check for existing logic or reuse process_image logic
+                # The model API expects a file path
+                page_text = cls.process_image(temp_img_path)
+                full_text.append(f"--- Page {i+1} ---\n{page_text}")
+                
+                # Cleanup
+                if os.path.exists(temp_img_path):
+                    os.remove(temp_img_path)
+                    
+            return "\n\n".join(full_text)
+            
+        except Exception as e:
+            return f"PDF Processing Error: {str(e)}"
 
 
 @tool
 def cv_parser_tool(file_path: str) -> dict:
     """
-    Parse a CV/Resume file (PDF, DOCX, TXT) and extract its text content.
+    Parse a CV/Resume file via DeepSeek-OCR (or fallback) AND index it into the RAG vector store.
+    
+    Supports: PDF, Images, DOCX, TXT.
+    Automatically adds the extracted content to the shared FAISS index for semantic search.
+    
     Returns a dictionary with 'content' and 'metadata'.
     """
-    try:
-        path = Path(file_path)
-        if not path.exists():
-            return {
-                "success": False,
-                "content": "",
-                "metadata": {},
-                "error": "File not found"
-            }
+    path = Path(file_path)
+    if not path.exists():
+        return {
+            "success": False,
+            "content": "",
+            "metadata": {},
+            "error": "File not found"
+        }
+        
+    file_ext = path.suffix.lower()
+    content = ""
+    error = None
 
-        text = path.read_text(encoding="utf-8", errors="ignore")
+    
+    try:
+        if file_ext in ['.jpg', '.jpeg', '.png']:
+            if DEEPSEEK_AVAILABLE:
+                content = DeepSeekOCRHandler.process_image(str(path))
+            else:
+                error = "DeepSeek-OCR dependencies not installed"
+                
+        elif file_ext == '.pdf':
+            if DEEPSEEK_AVAILABLE and PDF2IMAGE_AVAILABLE:
+                content = DeepSeekOCRHandler.process_pdf(str(path))
+            else:
+                # Fallback to simple binary read if tools unavailable
+                # In production, use pypdf as fallback
+                try:
+                    import pypdf
+                    reader = pypdf.PdfReader(file_path)
+                    content = "\n".join([page.extract_text() for page in reader.pages])
+                except ImportError:
+                     # Final fallback to existing text read (likely garbage for PDF)
+                     content = path.read_text(encoding="utf-8", errors="ignore")
+                     error = "Advanced PDF parsing unavailable (missing modules)"
+
+        elif file_ext in ['.txt', '.md', '.py', '.json']:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            
+        elif file_ext == '.docx':
+            try:
+                import docx
+                doc = docx.Document(file_path)
+                content = "\n".join([p.text for p in doc.paragraphs])
+            except ImportError:
+                 error = "python-docx not installed"
+        
+        else:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+
+        # --- RAG INGESTION ---
+        if content and RAG_AVAILABLE:
+            metadata = {
+                "source": str(path),
+                "name": path.name,
+                "format": file_ext,
+                "size": path.stat().st_size
+            }
+            RAGHandler.add_document(content, metadata)
+        # ---------------------
 
         return {
             "success": True,
-            "content": text,
+            "content": content,
             "metadata": {
                 "name": path.name,
-                "format": path.suffix.lower(),
+                "format": file_ext,
                 "size": path.stat().st_size
             },
-            "error": None
+            "error": error
         }
 
     except Exception as e:

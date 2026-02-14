@@ -15,17 +15,17 @@ TODO for Squad 2:
 """
 
 from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import AIMessage
 
 from agents.shared.state import AgentState
-from agents.shared.utils import logger, extract_last_message
+from agents.shared.utils import logger, get_llm
 
 # Import tools from the tools folder
 from .tools.retrieval import template_retriever_tool
 from .tools.generation import job_offer_generator, offer_validator_tool, market_salary_check
 
 # List of all available tools for this agent
-# Bind these to your LLM: llm_with_tools = llm.bind_tools(MANAGER_TOOLS)
 MANAGER_TOOLS = [
     template_retriever_tool,
     job_offer_generator,
@@ -43,33 +43,15 @@ def agent_node(state: AgentState) -> dict:
     
     Returns:
         Updated state with the agent's response.
-    
-    TODO: Replace this mock implementation with actual template/offer generation.
     """
-    # Extract the last user message for context
-    last_message = state["messages"][-1] if state["messages"] else None
-    user_query = last_message.content if last_message else "No query provided"
+    llm = get_llm()
+    # Bind tools to the LLM
+    llm_with_tools = llm.bind_tools(MANAGER_TOOLS)
     
-    # Get any shared context from the recruiter agent
-    job_context = state.get("job_context", {})
+    # Invoke the LLM with the message history
+    response = llm_with_tools.invoke(state["messages"])
     
-    # Mock response - Squad 2 will replace this with actual logic
-    response_content = (
-        f"📝 **Hiring Manager Agent Processing**\n\n"
-        f"Received task: {user_query}\n\n"
-        f"**Capabilities (to be implemented):**\n"
-        f"- RAG Template Retrieval\n"
-        f"- Job Offer Generation\n"
-        f"- Email Drafting\n"
-        f"- Interview Communications\n\n"
-        f"**Shared Context:** {job_context if job_context else 'No context yet'}\n\n"
-        f"*Squad 2: Implement your logic here!*"
-    )
-    
-    return {
-        "messages": [AIMessage(content=response_content)],
-        "job_context": job_context
-    }
+    return {"messages": [response]}
 
 
 def build_manager_graph() -> StateGraph:
@@ -82,14 +64,26 @@ def build_manager_graph() -> StateGraph:
     # Initialize the graph with shared state
     graph = StateGraph(AgentState)
     
-    # Add the main processing node
+    # Add the main agent node
     graph.add_node("manager_process", agent_node)
+    
+    # Add the tool execution node
+    tool_node = ToolNode(MANAGER_TOOLS)
+    graph.add_node("tools", tool_node)
     
     # Set entry point
     graph.set_entry_point("manager_process")
     
-    # Add edge to END
-    graph.add_edge("manager_process", END)
+    # Define conditional logic
+    # If the LLM produces tool calls -> 'tools' node
+    # Otherwise -> END
+    graph.add_conditional_edges(
+        "manager_process",
+        tools_condition,
+    )
+    
+    # Return from tools back to agent to generate final response
+    graph.add_edge("tools", "manager_process")
     
     return graph.compile()
 

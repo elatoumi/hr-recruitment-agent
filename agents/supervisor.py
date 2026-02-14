@@ -13,9 +13,10 @@ from pydantic import BaseModel, Field
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from langchain_core.language_models.fake import FakeListLLM
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from agents.shared.state import AgentState
+from agents.shared.utils import get_llm, logger
 from agents.recruiter_agent import recruiter_graph
 from agents.manager_agent import manager_graph
 
@@ -42,7 +43,8 @@ class RouteDecision(BaseModel):
 SUPERVISOR_SYSTEM_PROMPT = """You are a supervisor managing a recruitment team with two specialized agents:
 
 1. **Lead_Recruiter**: Handles CV/resume tasks including:
-   - Parsing and analyzing CVs/resumes
+   - Parsing and analyzing CVs/resumes (PDF, DOCX, etc.)
+   - Summarizing candidate profiles
    - Extracting skills from candidates
    - Ranking and scoring candidates
    - Scraping job boards or profiles
@@ -57,76 +59,7 @@ SUPERVISOR_SYSTEM_PROMPT = """You are a supervisor managing a recruitment team w
 
 Based on the user's request, decide which agent should handle the task.
 If the task appears complete or is a simple greeting/question, respond with FINISH.
-
-Always respond with a JSON object containing:
-- "next": One of "Lead_Recruiter", "Hiring_Manager", or "FINISH"
-- "reasoning": Brief explanation of your decision
 """
-
-
-def create_supervisor_llm():
-    """
-    Creates the LLM instance for the supervisor.
-    
-    Returns:
-        An LLM instance (placeholder using FakeListLLM).
-    
-    TODO: Replace with actual LLM (ChatGroq, ChatOpenAI, etc.)
-    Configure your API keys in environment variables.
-    
-    Example for production:
-        from langchain_groq import ChatGroq
-        return ChatGroq(
-            model="llama-3.1-70b-versatile",
-            temperature=0
-        )
-    """
-    # Placeholder responses for demo - rotates through these
-    fake_responses = [
-        '{"next": "Lead_Recruiter", "reasoning": "User wants to analyze or rank candidates"}',
-        '{"next": "Hiring_Manager", "reasoning": "User wants to create job-related content"}',
-        '{"next": "FINISH", "reasoning": "Task appears complete"}',
-    ]
-    return FakeListLLM(responses=fake_responses)
-
-
-def determine_route(user_message: str) -> str:
-    """
-    Simple rule-based routing as fallback/demo.
-    In production, this logic is handled by the LLM.
-    
-    Args:
-        user_message: The user's input message.
-    
-    Returns:
-        The routing decision string.
-    """
-    message_lower = user_message.lower()
-    
-    # Keywords for Lead Recruiter
-    recruiter_keywords = [
-        "cv", "resume", "parse", "analyze", "rank", "score", 
-        "candidate", "skill", "extract", "scrape", "screen",
-        "application", "applicant", "profile"
-    ]
-    
-    # Keywords for Hiring Manager
-    manager_keywords = [
-        "offer", "template", "email", "draft", "write", 
-        "job description", "interview", "letter", "invitation",
-        "communication", "generate offer", "create job"
-    ]
-    
-    # Check for recruiter keywords
-    if any(keyword in message_lower for keyword in recruiter_keywords):
-        return "Lead_Recruiter"
-    
-    # Check for manager keywords
-    if any(keyword in message_lower for keyword in manager_keywords):
-        return "Hiring_Manager"
-    
-    # Default to FINISH for greetings or unclear requests
-    return "FINISH"
 
 
 def supervisor_node(state: AgentState) -> dict:
@@ -149,17 +82,31 @@ def supervisor_node(state: AgentState) -> dict:
             "next": "FINISH",
             "messages": [AIMessage(content="No input received. Please provide a task.")]
         }
+        
+    llm = get_llm()
+    structured_llm = llm.with_structured_output(RouteDecision)
     
-    # Get the last user message
-    last_message = messages[-1]
-    user_input = last_message.content if hasattr(last_message, 'content') else str(last_message)
+    # Create the prompt chain
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SUPERVISOR_SYSTEM_PROMPT),
+        MessagesPlaceholder(variable_name="messages"),
+    ])
     
-    # Use rule-based routing for demo (replace with LLM in production)
-    route = determine_route(user_input)
+    chain = prompt | structured_llm
     
+    try:
+        decision = chain.invoke({"messages": messages})
+        route = decision.next
+        reasoning = decision.reasoning
+    except Exception as e:
+        logger.error(f"Supervisor LLM error: {e}")
+        # Fallback to FINISH if LLM fails
+        route = "FINISH" 
+        reasoning = "Error in decision making process."
+
     # Log the routing decision
     routing_message = AIMessage(
-        content=f"🔀 **Supervisor Decision**: Routing to `{route}`"
+        content=f"🔀 **Supervisor Decision**: Routing to `{route}`\n*Reasoning: {reasoning}*"
     )
     
     return {
