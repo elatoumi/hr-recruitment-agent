@@ -50,8 +50,64 @@ def get_llm():
     )
 
 # ============================================================
-# LOGGING CONFIGURATION
+# MESSAGE MANAGEMENT (token-limit safety)
 # ============================================================
+
+# Rough char limit to stay under the 8 000-token TPM ceiling.
+# 1 token ≈ 4 chars → 6 000 tokens ≈ 24 000 chars (leaving headroom
+# for the system prompt + tool definitions).
+MAX_CONTEXT_CHARS = 20_000
+MAX_SINGLE_MSG_CHARS = 3_000          # truncate any single message body
+
+
+def truncate_message_content(content, max_chars: int = MAX_SINGLE_MSG_CHARS) -> str:
+    """Truncate a single message's text content if it exceeds *max_chars*."""
+    if not isinstance(content, str):
+        return content
+    if len(content) <= max_chars:
+        return content
+    half = max_chars // 2
+    return content[:half] + f"\n\n... [truncated {len(content) - max_chars} chars] ...\n\n" + content[-half:]
+
+
+def trim_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> list:
+    """
+    Return a trimmed copy of *messages* that fits within *max_chars* total.
+
+    Strategy:
+    1. Always keep the FIRST message (user's original request).
+    2. Truncate every individual message body that is too long.
+    3. If total still exceeds the budget, drop the oldest middle messages.
+    """
+    from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+
+    if not messages:
+        return messages
+
+    # Step 1 – truncate individual messages
+    trimmed = []
+    for msg in messages:
+        content = msg.content
+        if isinstance(content, str) and len(content) > MAX_SINGLE_MSG_CHARS:
+            content = truncate_message_content(content)
+            # Create a shallow copy with truncated content
+            msg = msg.copy(update={"content": content})
+        trimmed.append(msg)
+
+    # Step 2 – if total still too big, drop oldest middle messages
+    def _total(msgs):
+        return sum(len(m.content) if isinstance(m.content, str) else 0 for m in msgs)
+
+    if _total(trimmed) <= max_chars:
+        return trimmed
+
+    # Keep first message + last N messages
+    first = trimmed[:1]
+    rest = trimmed[1:]
+    while len(rest) > 1 and _total(first + rest) > max_chars:
+        rest.pop(0)  # drop oldest middle message
+
+    return first + rest
 
 def setup_logger(
     name: str,

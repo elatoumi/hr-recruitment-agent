@@ -12,3 +12,7 @@ chromadb
 faiss-cpu
 python-dotenv
 pydantic>=2.0
+
+beautifulsoup4
+markdownify
+crawl4ai

@@ -133,30 +133,34 @@ class DeepSeekOCRHandler:
         """Convert PDF to images and process each."""
         if not PDF2IMAGE_AVAILABLE:
             return "Error: pdf2image library not found. Cannot convert PDF to images for OCR."
-            
+
+        import tempfile
+        temp_files = []
         try:
-            # Convert PDF pages to images
             images = convert_from_path(pdf_path)
             full_text = []
-            
+
             for i, img in enumerate(images):
-                # Save temp image for the model file-based API
-                temp_img_path = f"{pdf_path}_page_{i}.jpg"
+                # Write temp image to system temp dir (not uploads)
+                fd, temp_img_path = tempfile.mkstemp(suffix=f"_page_{i}.jpg")
+                os.close(fd)
+                temp_files.append(temp_img_path)
                 img.save(temp_img_path, "JPEG")
-                
-                # Check for existing logic or reuse process_image logic
-                # The model API expects a file path
+
                 page_text = cls.process_image(temp_img_path)
                 full_text.append(f"--- Page {i+1} ---\n{page_text}")
-                
-                # Cleanup
-                if os.path.exists(temp_img_path):
-                    os.remove(temp_img_path)
-                    
+
             return "\n\n".join(full_text)
-            
+
         except Exception as e:
             return f"PDF Processing Error: {str(e)}"
+        finally:
+            for tf in temp_files:
+                try:
+                    if os.path.exists(tf):
+                        os.remove(tf)
+                except OSError:
+                    pass
 
 
 @tool
@@ -186,24 +190,35 @@ def cv_parser_tool(file_path: str) -> dict:
     try:
         if file_ext in ['.jpg', '.jpeg', '.png']:
             if DEEPSEEK_AVAILABLE:
-                content = DeepSeekOCRHandler.process_image(str(path))
+                try:
+                    content = DeepSeekOCRHandler.process_image(str(path))
+                except Exception as ocr_err:
+                    error = f"DeepSeek-OCR failed on image: {ocr_err}"
             else:
-                error = "DeepSeek-OCR dependencies not installed"
+                error = "DeepSeek-OCR dependencies not installed; cannot extract text from images"
                 
         elif file_ext == '.pdf':
+            # Try DeepSeek-OCR first, then fall back to pypdf
+            ocr_succeeded = False
             if DEEPSEEK_AVAILABLE and PDF2IMAGE_AVAILABLE:
-                content = DeepSeekOCRHandler.process_pdf(str(path))
-            else:
-                # Fallback to simple binary read if tools unavailable
-                # In production, use pypdf as fallback
+                try:
+                    content = DeepSeekOCRHandler.process_pdf(str(path))
+                    if content and not content.startswith("Error:") and not content.startswith("PDF Processing Error:"):
+                        ocr_succeeded = True
+                except Exception as ocr_err:
+                    error = f"DeepSeek-OCR failed, falling back to pypdf: {ocr_err}"
+
+            if not ocr_succeeded:
                 try:
                     import pypdf
                     reader = pypdf.PdfReader(file_path)
-                    content = "\n".join([page.extract_text() for page in reader.pages])
+                    pages_text = [page.extract_text() or "" for page in reader.pages]
+                    content = "\n".join(pages_text).strip()
+                    if not content:
+                        error = "pypdf extracted no text (scanned PDF?)"
                 except ImportError:
-                     # Final fallback to existing text read (likely garbage for PDF)
-                     content = path.read_text(encoding="utf-8", errors="ignore")
-                     error = "Advanced PDF parsing unavailable (missing modules)"
+                    content = path.read_text(encoding="utf-8", errors="ignore")
+                    error = "Advanced PDF parsing unavailable (missing pypdf)"
 
         elif file_ext in ['.txt', '.md', '.py', '.json']:
             content = path.read_text(encoding="utf-8", errors="ignore")
@@ -330,9 +345,9 @@ def batch_upload_handler(files: List[str]) -> List[Dict]:
     results = []
 
     for file_path in files:
-        parsed = cv_parser_tool(file_path)
-        if parsed["success"]:
-            parsed["content"] = text_cleaner_pipeline(parsed["content"])
+        parsed = cv_parser_tool.invoke({"file_path": file_path})
+        if parsed.get("success"):
+            parsed["content"] = text_cleaner_pipeline.invoke({"text": parsed["content"]})
         results.append(parsed)
 
     return results

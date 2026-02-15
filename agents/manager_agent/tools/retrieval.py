@@ -7,12 +7,11 @@ using RAG (Retrieval-Augmented Generation) with ChromaDB.
 Group: Hiring Manager Agent (Group 2)
 
 Tools:
-- template_retriever_tool: Query ChromaDB for best template by role
+- find_template: Query ChromaDB for best template by role
 - ingest_templates_to_chromadb: Load templates into ChromaDB
-- initialize_chromadb_collection: Set up ChromaDB collection
 """
 
-from typing import Optional
+from typing import Optional, List
 from langchain_core.tools import tool
 
 
@@ -24,116 +23,250 @@ except ImportError:
     CHROMA_AVAILABLE = False
 
 
-# Mock templates for fallback
+# ============================================================
+# MOCK / BUILT-IN TEMPLATES
+# ============================================================
+
 MOCK_TEMPLATES = {
     "software": """
-    JOB OFFER: Software Engineer
-    Title: {{position}}
-    Salary: ${{salary}}
-    Benefits: Health, Dental, 401k
-    Description: We are looking for a skilled developer...
-    """,
+JOB OFFER: Software Engineer
+Title: {{position}}
+Salary: ${{salary}}
+Location: {{location}}
+Contract: {{contract}}
+
+Benefits: Health, Dental, 401k
+Description: We are looking for a skilled developer to join our engineering team.
+
+Responsibilities:
+- Design and develop scalable software solutions
+- Collaborate with cross-functional teams
+- Participate in code reviews and technical discussions
+""",
     "sales": """
-    JOB OFFER: Sales Representative
-    Title: {{position}}
-    Salary: ${{salary}} + Commission
-    Benefits: Health, Travel allowance
-    Description: Join our dynamic sales team...
-    """,
+JOB OFFER: Sales Representative
+Title: {{position}}
+Salary: ${{salary}} + Commission
+Location: {{location}}
+Contract: {{contract}}
+
+Benefits: Health, Travel allowance
+Description: Join our dynamic sales team and help drive revenue growth.
+
+Responsibilities:
+- Build and maintain client relationships
+- Meet quarterly sales targets
+- Conduct product demonstrations
+""",
     "management": """
-    JOB OFFER: Manager
-    Title: {{position}}
-    Salary: ${{salary}}
-    Benefits: Full package + Stock options
-    Description: Lead our team to success...
-    """
+JOB OFFER: Manager
+Title: {{position}}
+Salary: ${{salary}}
+Location: {{location}}
+Contract: {{contract}}
+
+Benefits: Full package + Stock options
+Description: Lead our team to success in a fast-paced environment.
+
+Responsibilities:
+- Manage and mentor a team of professionals
+- Set strategic goals and track performance
+- Collaborate with leadership on key initiatives
+""",
+    "intern": """
+JOB OFFER: Internship
+Title: {{position}}
+Salary: ${{salary}} (stipend)
+Location: {{location}}
+Contract: {{contract}}
+
+Benefits: Mentorship, Lunch allowance, Learning budget
+Description: Kick-start your career with hands-on experience.
+
+Responsibilities:
+- Support the team with daily tasks
+- Learn company tools and processes
+- Present a final project at the end of the internship
+""",
 }
 
+# ============================================================
+# CHROMADB HELPERS
+# ============================================================
+
+_chroma_client = None
+_chroma_collection = None
+
+
 def get_chroma_client():
+    """Get or create a singleton ChromaDB client."""
+    global _chroma_client
     if not CHROMA_AVAILABLE:
         return None
-    return chromadb.Client() # In-memory for demo
+    if _chroma_client is None:
+        _chroma_client = chromadb.Client()  # In-memory for demo
+    return _chroma_client
 
-def initialize_chromadb_collection():
+
+def initialize_chromadb_collection(collection_name: str = "hr_templates"):
+    """
+    Initialize (or retrieve) a ChromaDB collection and seed it with default
+    templates if empty.
+
+    Args:
+        collection_name: Name of the ChromaDB collection.
+
+    Returns:
+        The ChromaDB collection object, or None if ChromaDB is unavailable.
+    """
+    global _chroma_collection
+    if _chroma_collection is not None:
+        return _chroma_collection
+
     client = get_chroma_client()
     if not client:
         return None
-    
-    collection = client.get_or_create_collection(name="hr_templates")
-    
-    # Ingest mock templates if empty
-    if collection.count() == 0:
+
+    _chroma_collection = client.get_or_create_collection(name=collection_name)
+
+    # Seed with mock templates if the collection is empty
+    if _chroma_collection.count() == 0:
         ids = list(MOCK_TEMPLATES.keys())
         documents = list(MOCK_TEMPLATES.values())
-        metadatas = [{"role": k} for k in ids]
-        collection.add(documents=documents, metadatas=metadatas, ids=ids)
-        
-    return collection
+        metadatas = [{"role": k, "type": "offer_template"} for k in ids]
+        _chroma_collection.add(documents=documents, metadatas=metadatas, ids=ids)
 
-@tool
-def template_retriever_tool(
-    role_type: str,
-    context: Optional[str] = None
+    return _chroma_collection
+
+
+# ============================================================
+# NON-TOOL HELPERS
+# ============================================================
+
+def get_template(role_type: str, context: Optional[str] = None) -> dict:
+    """
+    Core template retrieval function (non-tool version).
+
+    Args:
+        role_type: Type of template to retrieve.
+        context: Optional semantic context.
+
+    Returns:
+        Retrieved template data dictionary.
+    """
+    return find_template.invoke({"role_type": role_type, "context": context})
+
+
+def list_available_templates() -> List[str]:
+    """
+    List all available template type IDs.
+
+    Returns:
+        List of template IDs / role names.
+    """
+    collection = initialize_chromadb_collection()
+    if collection:
+        try:
+            result = collection.get()
+            return result.get("ids", list(MOCK_TEMPLATES.keys()))
+        except Exception:
+            pass
+    return list(MOCK_TEMPLATES.keys())
+
+
+def add_template(
+    template_type: str,
+    name: str,
+    content: str,
+    metadata: Optional[dict] = None,
 ) -> dict:
     """
-    Retrieve the best HR template from ChromaDB based on role.
-    
-    Queries ChromaDB to find the best template based on the role
-    (e.g., retrieve "Senior Tech Package" for an Engineer role).
-    
+    Add a single new template to ChromaDB.
+
     Args:
-        role_type: Type of role/template to retrieve 
+        template_type: Category of template (e.g. 'offer', 'email').
+        name: Template name / ID.
+        content: Template content.
+        metadata: Additional metadata.
+
+    Returns:
+        Result dictionary.
+    """
+    collection = initialize_chromadb_collection()
+    if not collection:
+        # Fallback: just store in MOCK_TEMPLATES dict
+        MOCK_TEMPLATES[name] = content
+        return {"success": True, "storage": "in-memory fallback"}
+
+    meta = {"role": template_type, "type": template_type}
+    if metadata:
+        meta.update(metadata)
+
+    try:
+        collection.add(documents=[content], metadatas=[meta], ids=[name])
+        return {"success": True, "id": name}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# TOOLS
+# ============================================================
+
+@tool
+def find_template(
+    role_type: str,
+    context: Optional[str] = None,
+) -> dict:
+    """
+    Retrieve the best HR template based on role type.
+
+    Queries ChromaDB (if available) or falls back to built-in templates.
+
+    Args:
+        role_type: Type of role/template to retrieve
                    (e.g., 'senior_engineer', 'sales', 'intern').
         context: Optional additional context for semantic matching.
-    
+
     Returns:
-        A dictionary containing:
-        - success: Boolean indicating if retrieval succeeded
-        - template: The retrieved template content
-        - template_name: Name/ID of the template
-        - similarity_score: How well the template matches the query
-        - alternatives: Other relevant templates (optional)
-        - error: Error message if retrieval failed
+        A dictionary with the template content and metadata.
     """
     try:
-        # Fallback if no Chroma
-        if not CHROMA_AVAILABLE:
-            key = "software" if "engineer" in role_type.lower() or "developer" in role_type.lower() \
-                else "sales" if "sales" in role_type.lower() \
-                else "management" if "manager" in role_type.lower() else "software"
-            
-            return {
-                "success": True,
-                "template": MOCK_TEMPLATES.get(key, MOCK_TEMPLATES["software"]),
-                "template_name": key,
-                "similarity_score": 1.0,
-                "alternatives": []
-            }
-
+        # Attempt ChromaDB retrieval
         collection = initialize_chromadb_collection()
-        if not collection:
-            raise Exception("ChromaDB initialization failed")
-            
-        # Query
-        query_text = f"{role_type} {context or ''}"
-        results = collection.query(query_texts=[query_text], n_results=1)
-        
-        if not results['documents'][0]:
-            return {"success": False, "error": "No templates found"}
-            
+        if collection and collection.count() > 0:
+            query_text = f"{role_type} {context or ''}"
+            results = collection.query(query_texts=[query_text], n_results=1)
+
+            if results["documents"] and results["documents"][0]:
+                return {
+                    "success": True,
+                    "template": results["documents"][0][0],
+                    "template_name": results["ids"][0][0],
+                    "similarity_score": 0.9,
+                    "alternatives": list_available_templates(),
+                }
+
+        # Fallback to built-in templates
+        key = _resolve_template_key(role_type)
         return {
             "success": True,
-            "template": results['documents'][0][0],
-            "template_name": results['ids'][0][0],
-            "similarity_score": 0.9, # Placeholder
-            "alternatives": []
+            "template": MOCK_TEMPLATES[key],
+            "template_name": key,
+            "similarity_score": 1.0,
+            "alternatives": list(MOCK_TEMPLATES.keys()),
         }
-        
+
     except Exception as e:
+        # Hard fallback
+        key = _resolve_template_key(role_type)
         return {
-            "success": False,
-            "error": str(e),
-            "template": MOCK_TEMPLATES["software"] # Hard fallback
+            "success": True,
+            "template": MOCK_TEMPLATES[key],
+            "template_name": key,
+            "similarity_score": 0.5,
+            "alternatives": [],
+            "warning": f"ChromaDB error, used fallback: {e}",
         }
 
 
@@ -141,112 +274,44 @@ def template_retriever_tool(
 def ingest_templates_to_chromadb(templates: list) -> dict:
     """
     Ingest a list of HR templates into ChromaDB.
-    
+
     Args:
-        templates: List of dicts with 'id', 'text', 'metadata'.
-        
+        templates: List of dicts, each with 'id', 'text', and optional 'metadata'.
+
     Returns:
         Status dictionary.
     """
     if not CHROMA_AVAILABLE:
         return {"success": False, "error": "ChromaDB not available"}
-        
+
     try:
         collection = initialize_chromadb_collection()
         if not collection:
             return {"success": False, "error": "Failed to init collection"}
-            
-        ids = [t.get('id', str(i)) for i, t in enumerate(templates)]
-        documents = [t.get('text', '') for t in templates]
-        metadatas = [t.get('metadata', {}) for t in templates]
-        
-        collection.add(
-            documents=documents,
-            metadatas=metadatas,
-            ids=ids
-        )
+
+        ids = [t.get("id", str(i)) for i, t in enumerate(templates)]
+        documents = [t.get("text", "") for t in templates]
+        metadatas = [t.get("metadata", {}) for t in templates]
+
+        collection.add(documents=documents, metadatas=metadatas, ids=ids)
         return {"success": True, "count": len(ids)}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def get_template(role_type: str, context: Optional[str] = None) -> dict:
-    """
-    Core template retrieval function (non-tool version).
-    
-    Args:
-        role_type: Type of template to retrieve.
-        context: Optional semantic context.
-    
-    Returns:
-        Retrieved template data.
-    """
-    # TODO: Implement core retrieval logic
-    raise NotImplementedError("Implement get_template")
 
+# ============================================================
+# PRIVATE HELPERS
+# ============================================================
 
-def ingest_templates_to_chromadb(templates_dir: str) -> dict:
-    """
-    Ingest a folder of template files into ChromaDB.
-    
-    Loads templates (Company Values, Offer Templates, Benefit Packages)
-    from a directory and stores them with embeddings in ChromaDB.
-    
-    Args:
-        templates_dir: Path to folder containing template files.
-    
-    Returns:
-        A dictionary containing:
-        - success: Boolean indicating if ingestion succeeded
-        - documents_ingested: Number of templates loaded
-        - collection_name: Name of ChromaDB collection
-        - error: Error message if ingestion failed
-    """
-    # TODO: Load text files, generate embeddings, store in ChromaDB with metadata
-    raise NotImplementedError("Implement ingest_templates_to_chromadb")
-
-
-def initialize_chromadb_collection(collection_name: str = "hr_templates") -> bool:
-    """
-    Initialize ChromaDB collection for templates.
-    
-    Args:
-        collection_name: Name of the collection to create.
-    
-    Returns:
-        True if initialization succeeded.
-    """
-    # TODO: Create ChromaDB client, create collection, configure embedding function
-    raise NotImplementedError("Implement initialize_chromadb_collection")
-
-
-def list_available_templates() -> list[str]:
-    """
-    List all available template types in ChromaDB.
-    
-    Returns:
-        List of template type names.
-    """
-    # TODO: Query ChromaDB for distinct template types
-    raise NotImplementedError("Implement list_available_templates")
-
-
-def add_template(
-    template_type: str,
-    name: str,
-    content: str,
-    metadata: Optional[dict] = None
-) -> dict:
-    """
-    Add a new template to ChromaDB.
-    
-    Args:
-        template_type: Category of template.
-        name: Template name/ID.
-        content: Template content.
-        metadata: Additional metadata.
-    
-    Returns:
-        Result of the operation.
-    """
-    # TODO: Add single template with embedding to ChromaDB
-    raise NotImplementedError("Implement add_template")
+def _resolve_template_key(role_type: str) -> str:
+    """Resolve a role_type string to the best matching MOCK_TEMPLATES key."""
+    role_lower = role_type.lower()
+    if any(kw in role_lower for kw in ("engineer", "developer", "software", "tech")):
+        return "software"
+    if "sales" in role_lower:
+        return "sales"
+    if any(kw in role_lower for kw in ("manager", "director", "lead", "management")):
+        return "management"
+    if "intern" in role_lower:
+        return "intern"
+    return "software"

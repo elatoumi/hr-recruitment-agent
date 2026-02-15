@@ -5,26 +5,27 @@ from pathlib import Path
 from langchain_core.tools import tool
 from .parsers import cv_parser_tool, text_cleaner_pipeline, RAGHandler # Import RAG
 
-def aggregate_experience(date_ranges: list) -> float:
-    """Helper to calculate total years of experience from date ranges."""
+def _aggregate_experience_simple(date_ranges: list) -> float:
+    """Simplified helper to calculate total years of experience from date ranges."""
     total_years = 0.0
     for r in date_ranges:
-        # Simplified parser for demonstration
-        # 'Jan 2020 - Present' -> 2020-01-01 to NOW
         try:
             parts = r.split('-')
             start_str = parts[0].strip()
             end_str = parts[1].strip()
-            
-            # Simple parsing logic
-            start_year = int(re.search(r'\d{4}', start_str).group())
+            m_start = re.search(r'\d{4}', start_str)
+            if not m_start:
+                continue
+            start_year = int(m_start.group())
             if 'present' in end_str.lower() or 'current' in end_str.lower():
                 end_year = datetime.now().year
             else:
-                end_year = int(re.search(r'\d{4}', end_str).group())
-                
+                m_end = re.search(r'\d{4}', end_str)
+                if not m_end:
+                    continue
+                end_year = int(m_end.group())
             total_years += (end_year - start_year)
-        except:
+        except Exception:
             pass
     return max(0.0, total_years)
 
@@ -62,7 +63,7 @@ def skill_extractor_tool(cv_text: str) -> dict:
     # Extract experience years using normalizer
     import re
     date_ranges = re.findall(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*-\s*(?:Present|Current|\w+\s+\d{4})", cv_text, re.IGNORECASE)
-    experience_years = aggregate_experience(date_ranges)
+    experience_years = _aggregate_experience_simple(date_ranges)
     
     # Heuristic for education
     education = []

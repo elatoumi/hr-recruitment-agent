@@ -6,16 +6,30 @@ This package contains all tools for the Hiring Manager Agent:
 - generation.py: Offer generation and validation
 """
 
-from .retrieval import template_retriever_tool, get_template, ingest_templates_to_chromadb
-from .generation import job_offer_generator, offer_validator_tool, market_salary_check
+from .retrieval import (
+    find_template,
+    ingest_templates_to_chromadb,
+    get_template,
+    list_available_templates,
+    add_template,
+)
+from .generation import (
+    job_offer_generator,
+    offer_validator_tool,
+    market_salary_check,
+    get_salary_range,
+)
 
 __all__ = [
     # Retrieval
-    "template_retriever_tool",
-    "get_template",
+    "find_template",
     "ingest_templates_to_chromadb",
+    "get_template",
+    "list_available_templates",
+    "add_template",
     # Generation & Validation
     "job_offer_generator",
     "offer_validator_tool",
     "market_salary_check",
+    "get_salary_range",
 ]

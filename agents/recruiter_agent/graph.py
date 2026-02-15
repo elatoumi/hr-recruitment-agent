@@ -1,16 +1,12 @@
 """
-Lead Recruiter Agent Graph - Squad 1's Workspace
+Lead Recruiter Agent Graph
 
 This agent handles:
-- CV parsing and analysis
+- CV parsing and analysis (PDF, DOCX, images via DeepSeek-OCR)
 - Skill extraction from resumes
 - Candidate ranking and scoring
-
-TODO for Squad 1:
-- Implement CV parsing tools
-- Add skill extraction logic
-- Build ranking algorithms
-- Integrate with vector store for semantic search
+- Semantic search across uploaded CVs (RAG / FAISS)
+- Job posting scraping from LinkedIn/Indeed
 """
 
 from langgraph.graph import StateGraph, END
@@ -19,12 +15,12 @@ from langchain_core.messages import AIMessage, SystemMessage
 from pathlib import Path
 
 from agents.shared.state import AgentState
-from agents.shared.utils import logger, get_llm
+from agents.shared.utils import logger, get_llm, trim_messages
 
 # Import tools from the tools folder
 from .tools.parsers import cv_parser_tool, text_cleaner_pipeline, anonymizer_tool
 from .tools.extraction import skill_extractor_tool, candidate_summarizer, search_cvs_by_content
-from .tools.ranking import similarity_matcher_tool, match_explainer, cv_ranker
+from .tools.ranking import similarity_matcher_tool, match_explainer, cv_ranker, rank_uploaded_cvs
 from .tools.scraping import job_scraper_tool
 
 # List of all available tools for this agent
@@ -38,6 +34,7 @@ RECRUITER_TOOLS = [
     similarity_matcher_tool,
     match_explainer,
     cv_ranker,
+    rank_uploaded_cvs,
     job_scraper_tool,
 ]
 
@@ -69,13 +66,26 @@ def agent_node(state: AgentState) -> dict:
     llm_with_tools = llm.bind_tools(RECRUITER_TOOLS)
     
     # Prepend system message with file context
-    messages = list(state["messages"])
+    messages = trim_messages(list(state["messages"]))
     system_prompt = (
-        "You are the Lead Recruiter Agent. "
-        "Your responsibilities include parsing CVs, extracting skills, summarizing candidates, and searching for candidates by keyword/content. "
-        "You leverage a RAG (Retrieval-Augmented Generation) system to semantically search across all uploaded CVs. "
-        "For ANY question about candidate skills, experience, or specific text in CVS (e.g., 'Who knows Python?', 'Screen for Taher'), "
-        "IMMEDIATELY use the 'search_cvs_by_content' tool."
+        "You are the Lead Recruiter Agent. You MUST use your tools to complete tasks — never refuse or suggest the user install packages.\n\n"
+        "Available tools and when to call them:\n"
+        "- cv_parser_tool: Parse any CV file (PDF, DOCX, TXT, images). ALWAYS call this first for uploaded files.\n"
+        "- text_cleaner_pipeline: Clean extracted text.\n"
+        "- anonymizer_tool: Remove PII from CV text.\n"
+        "- skill_extractor_tool: Extract skills from CV text.\n"
+        "- candidate_summarizer: Summarize a candidate profile.\n"
+        "- search_cvs_by_content: Semantic search across all uploaded CVs. Use for any question about skills, experience, or candidate matching.\n"
+        "- similarity_matcher_tool: Match a candidate against a job description.\n"
+        "- match_explainer: Explain why a candidate matches/doesn't match.\n"
+        "- rank_uploaded_cvs: **USE THIS for ranking CVs**. Parses ALL uploaded CVs and ranks them against the job description in ONE call. Just pass the job description text.\n"
+        "- cv_ranker: Rank pre-parsed candidates (only if you already have parsed text).\n"
+        "- job_scraper_tool: Scrape a job posting URL.\n\n"
+        "CRITICAL RULES:\n"
+        "- ALWAYS call your tools immediately. Do NOT respond with text saying tools are missing or asking the user to install packages.\n"
+        "- For RANKING CVs against a job description: call rank_uploaded_cvs with the job_description text. It handles parsing ALL files automatically.\n"
+        "- For analysing a SINGLE CV: call cv_parser_tool on that file.\n"
+        "- For questions like 'Who knows Python?' use search_cvs_by_content.\n"
         f"{file_context}"
     )
     

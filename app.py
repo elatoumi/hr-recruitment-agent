@@ -6,291 +6,210 @@ Features a hierarchical supervisor pattern routing between specialized agents.
 """
 
 import streamlit as st
-import os
 from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage
 
 from agents.supervisor import supervisor_graph
-from agents.recruiter_agent.graph import recruiter_graph
-from agents.manager_agent.graph import manager_graph
+from agents.shared.utils import trim_messages
 
 
-# Page configuration
 st.set_page_config(
     page_title="HR Recruitment Platform",
     page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="centered",
 )
 
-# Custom CSS for better styling
+# Minimal styling
 st.markdown("""
 <style>
-    .stChatMessage {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-    .main-header {
-        text-align: center;
-        padding: 1rem 0;
-        border-bottom: 2px solid #e0e0e0;
-        margin-bottom: 2rem;
-    }
-    .agent-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem;
-        border-radius: 0.5rem;
-        color: white;
-        margin: 0.5rem 0;
-    }
+    .block-container { max-width: 760px; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def initialize_session_state():
-    """Initialize Streamlit session state variables."""
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    if "job_context" not in st.session_state:
-        st.session_state.job_context = {}
-        
-    if "uploaded_cvs" not in st.session_state:
-        st.session_state.uploaded_cvs = []
+# ── Session state ──────────────────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "job_context" not in st.session_state:
+    st.session_state.job_context = {}
+if "uploaded_cvs" not in st.session_state:
+    st.session_state.uploaded_cvs = []
+if "show_offer_form" not in st.session_state:
+    st.session_state.show_offer_form = False
+
+UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def render_sidebar():
-    """Render the sidebar with agent information and controls."""
-    with st.sidebar:
-        st.header("🤖 Agent System")
-        
-        # Add mode selection
-        st.radio(
-            "Select Operation Mode",
-            ["Supervisor (Full System)", "Recruiter Agent (Single)", "Manager Agent (Single)"],
-            key="mode"
-        )
-        st.markdown("---")
-        
-        st.markdown("### Available Agents")
-        
-        # Lead Recruiter Card
-        with st.expander("🎯 Lead Recruiter", expanded=True):
-            st.markdown("""
-            **Capabilities:**
-            - CV/Resume Parsing
-            - Skill Extraction
-            - Candidate Ranking
-            - Application Screening
-            
-            *Trigger words: analyze, rank, parse, CV, candidate, skill*
-            """)
-        
-        # Hiring Manager Card
-        with st.expander("📝 Hiring Manager", expanded=True):
-            st.markdown("""
-            **Capabilities:**
-            - Job Offer Generation
-            - Template Retrieval (RAG)
-            - Email Drafting
-            - Interview Communications
-            
-            *Trigger words: offer, template, email, draft, write*
-            """)
-        
-        st.markdown("---")
-        
-        # File Uploader Section
-        st.markdown("### 📂 CV Upload")
-        uploaded_files = st.file_uploader(
-            "Upload Candidate CVs", 
-            type=['pdf', 'docx', 'txt', 'jpg', 'png'],
-            accept_multiple_files=True
-        )
-        
-        if uploaded_files:
-            upload_dir = Path("data/uploads")
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            
-            saved_paths = []
-            for uploaded_file in uploaded_files:
-                file_path = upload_dir / uploaded_file.name
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                saved_paths.append(str(file_path))
-            
-            st.success(f"Uploaded {len(saved_paths)} files.")
-            
-            # Add to session state so agents can 'see' them if needed
-            if "uploaded_cvs" not in st.session_state:
-                st.session_state.uploaded_cvs = []
-            
-            # Avoid duplicates in list
-            for p in saved_paths:
-                if p not in st.session_state.uploaded_cvs:
-                    st.session_state.uploaded_cvs.append(p)
-            
-            with st.expander("Stored Files"):
-                for p in st.session_state.uploaded_cvs:
-                    st.code(p, language='text')
-
-        st.markdown("---")
-        
-        # Job Context Display
-        st.markdown("### 📋 Current Job Context")
-        if st.session_state.job_context:
-            st.json(st.session_state.job_context)
-        else:
-            st.info("No context yet. Start a conversation!")
-        
-        st.markdown("---")
-        
-        # Controls
-        if st.button("🗑️ Clear Conversation", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.job_context = {}
-            st.rerun()
-        
-        st.markdown("---")
-        st.markdown("### 📊 System Status")
-        st.success("✅ Supervisor: Online")
-        st.success("✅ Lead Recruiter: Ready")
-        st.success("✅ Hiring Manager: Ready")
+# ── Helpers ────────────────────────────────────────────────────
+def _extract_display_text(response_messages) -> str:
+    """Return only the final substantive assistant response, skipping routing messages."""
+    substantive = []
+    for msg in response_messages:
+        if not isinstance(msg, AIMessage):
+            continue
+        if not msg.content or not isinstance(msg.content, str):
+            continue
+        text = msg.content.strip()
+        if not text:
+            continue
+        if text.startswith("\U0001f500") and "Supervisor Decision" in text:
+            continue
+        substantive.append(text)
+    return substantive[-1] if substantive else ""
 
 
-def render_chat_interface():
-    """Render the main chat interface."""
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🎯 Intelligent HR Recruitment Platform</h1>
-        <p>Multi-Agent System powered by LangGraph</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Display chat messages
-    for message in st.session_state.messages:
-        if isinstance(message, HumanMessage):
-            with st.chat_message("user"):
-                st.markdown(message.content)
-        elif isinstance(message, AIMessage):
-            with st.chat_message("assistant"):
-                st.markdown(message.content)
-    
-    # Chat input
-    if user_input := st.chat_input("Ask about candidates, job offers, or recruitment tasks..."):
-        # Add user message to state
-        user_message = HumanMessage(content=user_input)
-        st.session_state.messages.append(user_message)
-        
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        
-        # Process through supervisor graph
-        with st.chat_message("assistant"):
-            with st.spinner("Processing..."):
-                try:
-                    # Prepare input state
-                    input_state = {
-                        "messages": [user_message],
-                        "next": "",
-                        "job_context": st.session_state.job_context
-                    }
-                    
-                    # Select graph based on mode
-                    mode = st.session_state.get("mode", "Supervisor (Full System)")
-                    if mode == "Recruiter Agent (Single)":
-                        active_graph = recruiter_graph
-                    elif mode == "Manager Agent (Single)":
-                        active_graph = manager_graph
-                    else:
-                        active_graph = supervisor_graph
+def _send_message(text: str):
+    """Send a message through the supervisor and display the response."""
+    user_message = HumanMessage(content=text)
+    st.session_state.messages.append(user_message)
 
-                    # Stream/invoke the graph
-                    result = active_graph.invoke(input_state)
-                    
-                    # Extract and display responses
-                    response_messages = result.get("messages", [])
-                    
-                    for msg in response_messages:
-                        if isinstance(msg, AIMessage):
-                            st.markdown(msg.content)
-                            st.session_state.messages.append(msg)
-                    
-                    # Update job context
-                    if result.get("job_context"):
-                        st.session_state.job_context.update(result["job_context"])
-                
-                except Exception as e:
-                    error_msg = f"❌ Error processing request: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append(AIMessage(content=error_msg))
+    with st.chat_message("user"):
+        st.markdown(text)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking…"):
+            try:
+                input_state = {
+                    "messages": trim_messages(list(st.session_state.messages)),
+                    "next": "",
+                    "job_context": st.session_state.job_context,
+                }
+                result = supervisor_graph.invoke(input_state)
+
+                display_text = _extract_display_text(result.get("messages", []))
+                if display_text:
+                    st.markdown(display_text)
+                    st.session_state.messages.append(AIMessage(content=display_text))
+                else:
+                    st.info("Done — no text response generated.")
+                    st.session_state.messages.append(AIMessage(content="(task completed)"))
+
+                if result.get("job_context"):
+                    st.session_state.job_context.update(result["job_context"])
+
+            except Exception as e:
+                err = f"❌ {e}"
+                st.error(err)
+                st.session_state.messages.append(AIMessage(content=err))
 
 
-def render_quick_actions():
-    """Render quick action buttons for common tasks."""
-    st.markdown("### ⚡ Quick Actions")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if st.button("📄 Analyze CVs", use_container_width=True):
-            st.session_state.pending_action = "Analyze the uploaded CVs and extract key skills"
-            st.rerun()
-    
-    with col2:
-        if st.button("🏆 Rank Candidates", use_container_width=True):
-            st.session_state.pending_action = "Rank the candidates based on their qualifications"
-            st.rerun()
-    
-    with col3:
-        if st.button("📝 Draft Job Offer", use_container_width=True):
-            st.session_state.pending_action = "Write a job offer letter for the selected candidate"
-            st.rerun()
-    
-    with col4:
-        if st.button("✉️ Email Template", use_container_width=True):
-            st.session_state.pending_action = "Get an email template for interview invitation"
-            st.rerun()
+# ── Top bar ────────────────────────────────────────────────────
+col_title, col_upload, col_form_btn = st.columns([4, 4, 2])
 
+with col_title:
+    st.markdown("#### 🎯 HR Recruitment")
 
-def main():
-    """Main application entry point."""
-    # Initialize session state
-    initialize_session_state()
-    
-    # Check for pending actions from quick action buttons
-    if "pending_action" in st.session_state:
-        action = st.session_state.pending_action
-        del st.session_state.pending_action
-        
-        # Add as user message
-        user_message = HumanMessage(content=action)
-        st.session_state.messages.append(user_message)
-    
-    # Render sidebar
-    render_sidebar()
-    
-    # Main content area
-    render_chat_interface()
-    
-    # Quick actions at the bottom
-    with st.container():
-        st.markdown("---")
-        render_quick_actions()
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #888;'>"
-        "Built with ❤️ using LangGraph & Streamlit | "
-        "Hierarchical Supervisor Pattern"
-        "</div>",
-        unsafe_allow_html=True
+with col_upload:
+    uploaded_files = st.file_uploader(
+        "Upload CVs",
+        type=["pdf", "docx", "txt", "jpg", "png"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
     )
+    if uploaded_files:
+        saved = []
+        for f in uploaded_files:
+            p = UPLOAD_DIR / f.name
+            p.write_bytes(f.getbuffer())
+            path_str = str(p)
+            if path_str not in st.session_state.uploaded_cvs:
+                st.session_state.uploaded_cvs.append(path_str)
+            saved.append(f.name)
+        st.success(f"{len(saved)} CV(s) uploaded")
 
+with col_form_btn:
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    if st.button("📝 Job Offer", use_container_width=True):
+        st.session_state.show_offer_form = not st.session_state.show_offer_form
 
-if __name__ == "__main__":
-    main()
+# ── Job Offer Form (collapsible) ──────────────────────────────
+if st.session_state.show_offer_form:
+    with st.expander("📝 Job Offer Details", expanded=True):
+        with st.form("job_offer_form", clear_on_submit=True):
+            st.markdown("**Fill in what you have — empty fields will use smart defaults.**")
+
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                f_job_title = st.text_input("Job Title *", placeholder="e.g. Senior Python Developer")
+                f_candidate = st.text_input("Candidate Name", placeholder="e.g. Alex Johnson")
+                f_email = st.text_input("Candidate Email", placeholder="e.g. alex@example.com")
+                f_salary = st.text_input("Base Salary (annual)", placeholder="e.g. $130,000")
+                f_company = st.text_input("Company Name", placeholder="e.g. Acme Corp")
+            with fc2:
+                f_location = st.text_input("Location / Work Mode", placeholder="e.g. Remote, San Francisco — Hybrid")
+                f_start_date = st.text_input("Start Date", placeholder="e.g. June 3, 2026")
+                f_manager = st.text_input("Reporting Manager", placeholder="e.g. Jane Smith, VP Engineering")
+                f_contact = st.text_input("HR Contact (name, email, phone)", placeholder="e.g. HR Team, hr@acme.com")
+                f_signing_bonus = st.text_input("Signing Bonus", placeholder="e.g. $10,000 (optional)")
+
+            f_benefits = st.text_area(
+                "Benefits & Perks",
+                placeholder="e.g. Health insurance, 20 days PTO, stock options, education budget…",
+                height=68,
+            )
+            f_conditions = st.text_area(
+                "Special Conditions",
+                placeholder="e.g. 3-month probation, relocation package…",
+                height=68,
+            )
+            f_extra = st.text_area(
+                "Additional Instructions",
+                placeholder="Any extra instructions for the AI (tone, format, etc.)",
+                height=68,
+            )
+
+            submitted = st.form_submit_button("🚀 Generate Offer", use_container_width=True)
+
+            if submitted:
+                if not f_job_title.strip():
+                    st.error("Job Title is required.")
+                else:
+                    # Build a structured prompt from form data
+                    parts = [f"Generate a complete, professional job offer for the position of **{f_job_title.strip()}**."]
+                    details = []
+                    if f_candidate.strip():
+                        details.append(f"Candidate name: {f_candidate.strip()}")
+                    if f_email.strip():
+                        details.append(f"Candidate email: {f_email.strip()}")
+                    if f_salary.strip():
+                        details.append(f"Base salary: {f_salary.strip()}")
+                    if f_location.strip():
+                        details.append(f"Location / work-mode: {f_location.strip()}")
+                    if f_start_date.strip():
+                        details.append(f"Start date: {f_start_date.strip()}")
+                    if f_manager.strip():
+                        details.append(f"Reporting manager: {f_manager.strip()}")
+                    if f_company.strip():
+                        details.append(f"Company: {f_company.strip()}")
+                    if f_signing_bonus.strip():
+                        details.append(f"Signing bonus: {f_signing_bonus.strip()}")
+                    if f_contact.strip():
+                        details.append(f"HR contact for signature: {f_contact.strip()}")
+                    if f_benefits.strip():
+                        details.append(f"Benefits & perks: {f_benefits.strip()}")
+                    if f_conditions.strip():
+                        details.append(f"Special conditions: {f_conditions.strip()}")
+
+                    if details:
+                        parts.append("\nDetails:\n- " + "\n- ".join(details))
+                    if f_extra.strip():
+                        parts.append(f"\nAdditional instructions: {f_extra.strip()}")
+
+                    parts.append("\nPlease retrieve the best template, fill it, validate it, check market salary, and output the final offer letter.")
+
+                    prompt = "\n".join(parts)
+                    st.session_state.show_offer_form = False
+                    _send_message(prompt)
+
+st.divider()
+
+# ── Chat history ───────────────────────────────────────────────
+for message in st.session_state.messages:
+    role = "user" if isinstance(message, HumanMessage) else "assistant"
+    with st.chat_message(role):
+        st.markdown(message.content)
+
+# ── Chat input ─────────────────────────────────────────────────
+if user_input := st.chat_input("Message…"):
+    _send_message(user_input)

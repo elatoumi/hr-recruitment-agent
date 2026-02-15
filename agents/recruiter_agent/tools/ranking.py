@@ -29,26 +29,57 @@ except Exception as e:
     print(f"Warning: Could not load SentenceTransformer: {e}")
 
 
-def _candidate_json_to_text(candidate_profile: dict) -> str:
+def _candidate_json_to_text(candidate_profile) -> str:
     """
-    Convert structured candidate JSON into a single text string
-    suitable for semantic embedding.
+    Convert a candidate profile into a single text string for embedding.
+    Handles multiple input formats:
+      - Plain string (returned as-is)
+      - Dict with 'content' or 'text' key (raw CV text)
+      - Dict with 'skills'/'experience'/'education' keys (structured)
+      - Any other dict (all string values concatenated)
     """
+    if isinstance(candidate_profile, str):
+        return candidate_profile
+
+    if not isinstance(candidate_profile, dict):
+        return str(candidate_profile)
+
+    # Check for raw text keys first (most common from cv_parser_tool)
+    for key in ("content", "text", "cv_text", "raw_text"):
+        val = candidate_profile.get(key)
+        if isinstance(val, str) and len(val) > 50:
+            return val
+
+    # Structured format
     sections = []
 
     skills = candidate_profile.get("skills")
     if isinstance(skills, list) and skills:
-        sections.append("Skills: " + ", ".join(skills))
+        sections.append("Skills: " + ", ".join(str(s) for s in skills))
+    elif isinstance(skills, str) and skills.strip():
+        sections.append("Skills: " + skills)
 
     experience = candidate_profile.get("experience")
     if isinstance(experience, list) and experience:
-        sections.append("Experience: " + ". ".join(experience))
+        sections.append("Experience: " + ". ".join(str(e) for e in experience))
+    elif isinstance(experience, str) and experience.strip():
+        sections.append("Experience: " + experience)
 
     education = candidate_profile.get("education")
     if isinstance(education, str) and education.strip():
         sections.append("Education: " + education)
+    elif isinstance(education, list) and education:
+        sections.append("Education: " + ", ".join(str(e) for e in education))
 
-    return ". ".join(sections)
+    if sections:
+        return ". ".join(sections)
+
+    # Fallback: concatenate all string values in the dict
+    all_text = " ".join(
+        str(v) for v in candidate_profile.values()
+        if isinstance(v, str) and len(v) > 2
+    )
+    return all_text if all_text.strip() else str(candidate_profile)
 
 
 @tool
@@ -148,12 +179,105 @@ def match_explainer(
 @tool
 def cv_ranker(candidates: List[Dict], job_description: str) -> List[Dict]:
     """
-    Rank a list of candidates based on similarity to job description.
+    Rank a list of candidates based on semantic similarity to a job description.
+
+    Each candidate dict can have any of these formats:
+    - {"name": "...", "content": "<raw CV text>"}
+    - {"name": "...", "skills": [...], "experience": [...]}
+    - {"name": "...", "text": "<raw CV text>"}
+
+    Args:
+        candidates: List of candidate dicts.
+        job_description: The job description to rank against.
+
+    Returns:
+        Sorted list (highest score first) with a 'score' field added.
     """
+    if _model is None:
+        return [{"error": "Sentence-transformer model not loaded"}]
+
     ranked = []
     for cand in candidates:
-        score = similarity_matcher_tool(cand, job_description).get("similarity_score", 0)
-        cand["score"] = score
+        # Convert to text for embedding
+        cand_text = _candidate_json_to_text(cand)
+
+        if not cand_text.strip():
+            cand["score"] = 0.0
+            ranked.append(cand)
+            continue
+
+        # Direct embedding comparison (bypass similarity_matcher_tool for speed)
+        embeddings = _model.encode(
+            [cand_text, job_description],
+            normalize_embeddings=True
+        )
+        sim = float(cosine_similarity(
+            embeddings[0].reshape(1, -1),
+            embeddings[1].reshape(1, -1)
+        )[0][0])
+
+        cand["score"] = round(sim * 100, 2)
         ranked.append(cand)
-    
-    return sorted(ranked, key=lambda x: x["score"], reverse=True)
+
+    return sorted(ranked, key=lambda x: x.get("score", 0), reverse=True)
+
+
+@tool
+def rank_uploaded_cvs(job_description: str, file_paths: Optional[List[str]] = None) -> List[Dict]:
+    """
+    Parse AND rank all uploaded CVs against a job description in a single step.
+
+    This is the preferred tool for ranking CVs — it handles file parsing internally
+    so the full CV text never needs to pass through the conversation.
+
+    Args:
+        job_description: The full job description text to rank against.
+        file_paths: Optional explicit list of file paths. If omitted, ALL files
+                    in data/uploads/ are used automatically.
+
+    Returns:
+        Sorted list (highest score first) with name, score, and file path.
+    """
+    from pathlib import Path as _Path
+    from .parsers import cv_parser_tool
+
+    # Resolve file list
+    if not file_paths:
+        upload_dir = _Path("data/uploads")
+        if upload_dir.exists():
+            file_paths = [str(f) for f in upload_dir.glob("*") if f.is_file()]
+        else:
+            return [{"error": "No upload directory found and no file_paths provided."}]
+
+    if not file_paths:
+        return [{"error": "No CV files found to rank."}]
+
+    if _model is None:
+        return [{"error": "Sentence-transformer model not loaded"}]
+
+    # 1. Parse every CV
+    candidates = []
+    for fp in file_paths:
+        parsed = cv_parser_tool.invoke({"file_path": fp})
+        name = parsed.get("metadata", {}).get("name", _Path(fp).name)
+        content = parsed.get("content", "")
+        if not content or not content.strip():
+            candidates.append({"name": name, "file": fp, "score": 0.0, "note": "Could not extract text"})
+            continue
+        candidates.append({"name": name, "file": fp, "content": content})
+
+    # 2. Rank via embedding similarity
+    job_emb = _model.encode([job_description], normalize_embeddings=True)[0].reshape(1, -1)
+
+    ranked = []
+    for cand in candidates:
+        if "note" in cand:          # already marked as failed
+            ranked.append(cand)
+            continue
+        cand_text = cand.pop("content")  # keep text out of the returned dict
+        cand_emb = _model.encode([cand_text], normalize_embeddings=True)[0].reshape(1, -1)
+        sim = float(cosine_similarity(cand_emb, job_emb)[0][0])
+        cand["score"] = round(sim * 100, 2)
+        ranked.append(cand)
+
+    return sorted(ranked, key=lambda x: x.get("score", 0), reverse=True)
