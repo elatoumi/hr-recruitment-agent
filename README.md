@@ -1,6 +1,9 @@
-# 🤖 Intelligent HR Recruitment Agent
+🤖 Intelligent HR Recruitment Agent
 
-A project by ATIA Club ESB to build a next-generation, agentic recruitment platform. This system uses a conversational chat interface to manage the entire hiring workflow, from analyzing CVs to generating job offers.
+
+📌 This repository is a personal mirror of a team project originally developed by ATIA Club ESB (7 contributors). 
+
+A next-generation, agentic recruitment platform built around a conversational chat interface that manages the entire hiring workflow — from analyzing CVs to generating job offers.
 
 ## 🎯 Our Goal
 
@@ -119,25 +122,6 @@ Open your browser to http://localhost:8501 to see the app.
 └── README.md               # This file
 ```
 
-## 🤝 Contribution Workflow
+🤝 About This Project
 
-To keep our project organized with 7 members, we will follow a strict workflow.
-
-1. **Trello:** All tasks are on our Trello Board. Before starting work, move your card from 🎯 **Backlog (To Do)** to 🛠️ **In Progress**.
-
-2. **Branching:** The `main` branch is protected. All work must be done on feature branches.
-
-3. **Branch Naming:** Use this convention:
-   ```
-   feat/squad-name/task-description
-   ```
-   - Example 1: `feat/cv/pdf-parser`
-   - Example 2: `feat/offer/chroma-ingest`
-   - Example 3 (Mentor): `feat/mentor/langgraph-router`
-
-4. **Pull Requests (PRs):**
-   - When your feature is complete, push your branch to GitHub and open a Pull Request to merge into `main`.
-   - In your PR, tag @Taher1412 for review.
-   - Link to the Trello card in your PR description.
-   - **Do not merge your own PR.** The mentor will review and merge it.
-
+This platform was built collaboratively by a 7-person team as part of ATIA Club ESB, following a structured workflow: task tracking on Trello, feature branches, and pull requests reviewed before merging into main.
